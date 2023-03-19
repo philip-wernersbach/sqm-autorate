@@ -703,7 +703,7 @@ local function ratecontrol()
                         next_ul_rate = cur_ul_rate
                         next_dl_rate = cur_dl_rate
                         logger(loglevel.DEBUG, "up_del_stat " .. up_del_stat .. " down_del_stat " .. down_del_stat)
-                        if up_del_stat and up_del_stat < ul_max_delta_owd and tx_load > high_load_level then
+                        if up_del_stat and up_del_stat < ul_max_delta_owd and tx_load > high_load_level and (safe_peak_ul_rates_obs < histsize or cur_ul_rate < safe_peak_ul_rates_iqr.upper_bound) then
                             safe_ul_rates[nrate_up] = floor(cur_ul_rate * tx_load)
 
                             if safe_ul_rates[nrate_up] >= base_ul_rate then
@@ -727,7 +727,7 @@ local function ratecontrol()
                                 ul_linear_step = ul_linear_step + 1
                             end
                         end
-                        if down_del_stat and down_del_stat < dl_max_delta_owd and rx_load > high_load_level then
+                        if down_del_stat and down_del_stat < dl_max_delta_owd and rx_load > high_load_level and (safe_peak_dl_rates_obs < histsize or cur_dl_rate < safe_peak_dl_rates_iqr.upper_bound) then
                             safe_dl_rates[nrate_down] = floor(cur_dl_rate * rx_load)
 
                             if safe_dl_rates[nrate_down] >= base_dl_rate then
