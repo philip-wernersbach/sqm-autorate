@@ -589,6 +589,10 @@ local function ratecontrol()
     local safe_dl_rates_obs = 0
     local safe_ul_rates_obs = 0
 
+    -- Non-zero if a current rate is >= the base rate and the code is performing linear steps instead of exponential.
+    local dl_linear_step = 0
+    local ul_linear_step = 0
+
     local nrate_up = 0
     local nrate_down = 0
 
@@ -669,7 +673,9 @@ local function ratecontrol()
                     next_ul_rate = cur_ul_rate
                     next_dl_rate = cur_dl_rate
                 elseif #up_del == 0 or #down_del == 0 then
+                    dl_linear_step = 0
                     next_dl_rate = min_dl_rate
+                    ul_linear_step = 0
                     next_ul_rate = min_ul_rate
                 else
                     table.sort(up_del)
@@ -691,6 +697,12 @@ local function ratecontrol()
                             local max_ul = maximum(safe_ul_rates)
                             next_ul_rate = cur_ul_rate * (1 + .1 * max(0, (1 - cur_ul_rate / max_ul))) +
                                                (base_ul_rate * 0.03)
+
+                            if next_ul_rate >= base_ul_rate then
+                                next_ul_rate = base_ul_rate + (ul_linear_step * base_ul_rate * 0.03)
+                                ul_linear_step = ul_linear_step + 1
+                            end
+
                             nrate_up = nrate_up + 1
                             safe_ul_rates_obs = max(safe_ul_rates_obs, nrate_up)
                             nrate_up = nrate_up % histsize
@@ -702,6 +714,12 @@ local function ratecontrol()
                             local max_dl = maximum(safe_dl_rates)
                             next_dl_rate = cur_dl_rate * (1 + .1 * max(0, (1 - cur_dl_rate / max_dl))) +
                                                (base_dl_rate * 0.03)
+
+                            if next_dl_rate >= base_dl_rate then
+                                next_dl_rate = base_dl_rate + (dl_linear_step * base_dl_rate * 0.03)
+                                dl_linear_step = dl_linear_step + 1
+                            end
+
                             nrate_down = nrate_down + 1
                             safe_dl_rates_obs = max(safe_dl_rates_obs, nrate_down)
                             nrate_down = nrate_down % histsize
@@ -716,6 +734,13 @@ local function ratecontrol()
                             else
                                 next_ul_rate = 0.9 * cur_ul_rate * tx_load
                             end
+
+                            if next_ul_rate >= base_ul_rate then
+                                next_ul_rate = base_ul_rate
+                                ul_linear_step = 1
+                            else
+                                ul_linear_step = 0
+                            end
                         end
                         if down_del_stat > dl_max_delta_owd then
                             if #safe_dl_rates > 0 then
@@ -723,6 +748,13 @@ local function ratecontrol()
                                     safe_dl_rates[random(#safe_dl_rates) - 1])
                             else
                                 next_dl_rate = 0.9 * cur_dl_rate * rx_load
+                            end
+
+                            if next_dl_rate >= base_dl_rate then
+                                next_dl_rate = base_dl_rate
+                                dl_linear_step = 1
+                            else
+                                dl_linear_step = 0
                             end
                         end
                     end
