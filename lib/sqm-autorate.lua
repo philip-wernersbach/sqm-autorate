@@ -511,10 +511,10 @@ end
 local function compute_iqr(unsorted_vals)
     local nvals = #unsorted_vals
 
-    -- Create new table and sort it. The index of the first number has to be "1", because table.sort relies on base-1 arrays.
+    -- Create new table and sort it. The first index of standard Lua tables is "1".
     local vals = {}
-    for i = 0, nvals - 1, 1 do
-      vals[i + 1] = unsorted_vals[i]
+    for i = 1, nvals, 1 do
+      vals[i] = unsorted_vals[i]
     end
     table.sort(vals)
 
@@ -810,7 +810,7 @@ local function ratecontrol()
                         " next_ul_rate_unbounded " .. next_ul_rate_unbounded ..
                         " next_dl_rate_unbounded " .. next_dl_rate_unbounded)
 
-                    local iqr_info = "safe_peak_ul_rates_obs " .. safe_peak_dl_rates_obs .. " safe_peak_ul_rates_iqr {"
+                    local iqr_info = "safe_peak_ul_rates_obs " .. safe_peak_ul_rates_obs .. " safe_peak_ul_rates_iqr {"
                     for k, v in pairs(safe_peak_ul_rates_iqr) do
                         iqr_info = iqr_info .. k .. "=" .. v .. ","
                     end
