@@ -760,9 +760,10 @@ local function ratecontrol()
                                 next_ul_rate = 0.9 * cur_ul_rate * tx_load
                             end
 
+                            -- Calculate the linear step of the new rate.
+                            -- This is the equation `next = base + (step * base * 0.03)`, solved for `step`.
                             if next_ul_rate >= base_ul_rate then
-                                next_ul_rate = base_ul_rate
-                                ul_linear_step = 1
+                                ul_linear_step = floor(-1 * ((100 * (base_ul_rate - next_ul_rate)) / (3 * base_ul_rate))) + 1
                             else
                                 ul_linear_step = 0
                             end
@@ -775,9 +776,10 @@ local function ratecontrol()
                                 next_dl_rate = 0.9 * cur_dl_rate * rx_load
                             end
 
+                            -- Calculate the linear step of the new rate.
+                            -- This is the equation `next = base + (step * base * 0.03)`, solved for `step`.
                             if next_dl_rate >= base_dl_rate then
-                                next_dl_rate = base_dl_rate
-                                dl_linear_step = 1
+                                dl_linear_step = floor(-1 * ((100 * (base_dl_rate - next_dl_rate)) / (3 * base_dl_rate))) + 1
                             else
                                 dl_linear_step = 0
                             end
