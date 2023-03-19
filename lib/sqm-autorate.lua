@@ -525,7 +525,7 @@ local function compute_iqr(unsorted_vals)
     local q1_val = vals[q1]
     local q3_val = vals[q3]
     local iqr = q3_val - q1_val
-    local iqr_fence = iqr * 1.5
+    local iqr_fence = iqr * 0.6
     local upper_bound = math.floor(q3_val + iqr_fence)
 
     return {
@@ -580,18 +580,29 @@ local function ratecontrol()
         safe_ul_rates[i] = (random() * 0.2 + 0.75) * (base_ul_rate)
     end
 
-    -- IQR data, recomputed when the safe rates change. Used to find a reasonable maximum rate.
-    local safe_dl_rates_iqr = compute_iqr(safe_dl_rates)
-    local safe_ul_rates_iqr = compute_iqr(safe_ul_rates)
+    -- We use table functions on these tables, so the indexes of these tables start at 1.
+    local safe_peak_dl_rates = {}
+    local safe_peak_ul_rates = {}
+    for i = 0, histsize, 1 do
+        safe_peak_dl_rates[i] = base_dl_rate
+        safe_peak_ul_rates[i] = base_ul_rate
+    end
 
-    -- `safe_dl_rates` and `safe_ul_rates` get initialized with random values, and always have a length of `histsize`. These counters track the number of
+    -- IQR data, recomputed when the safe rates change. Used to find a reasonable maximum rate.
+    local safe_peak_dl_rates_iqr = compute_iqr(safe_peak_dl_rates)
+    local safe_peak_ul_rates_iqr = compute_iqr(safe_peak_ul_rates)
+
+    -- `safe_peak_dl_rates` and `safe_peak_ul_rates` get initialized with static values, and always have a length of `histsize`. These counters track the number of
     -- "real" observations in both tables.
-    local safe_dl_rates_obs = 0
-    local safe_ul_rates_obs = 0
+    local safe_peak_dl_rates_obs = 0
+    local safe_peak_ul_rates_obs = 0
 
     -- Non-zero if a current rate is >= the base rate and the code is performing linear steps instead of exponential.
     local dl_linear_step = 0
     local ul_linear_step = 0
+
+    local nrate_peak_up = 1
+    local nrate_peak_down = 1
 
     local nrate_up = 0
     local nrate_down = 0
@@ -694,6 +705,19 @@ local function ratecontrol()
                         logger(loglevel.DEBUG, "up_del_stat " .. up_del_stat .. " down_del_stat " .. down_del_stat)
                         if up_del_stat and up_del_stat < ul_max_delta_owd and tx_load > high_load_level then
                             safe_ul_rates[nrate_up] = floor(cur_ul_rate * tx_load)
+
+                            if safe_ul_rates[nrate_up] >= base_ul_rate then
+                                safe_peak_ul_rates[nrate_peak_up] = safe_ul_rates[nrate_up]
+                                safe_peak_ul_rates_iqr = compute_iqr(safe_peak_ul_rates)
+                                safe_peak_ul_rates_obs = max(safe_peak_ul_rates_obs, nrate_peak_up)
+
+                                nrate_peak_up = nrate_peak_up % histsize
+                                nrate_peak_up = nrate_peak_up + 1
+                            end
+
+                            nrate_up = nrate_up + 1
+                            nrate_up = nrate_up % histsize
+
                             local max_ul = maximum(safe_ul_rates)
                             next_ul_rate = cur_ul_rate * (1 + .1 * max(0, (1 - cur_ul_rate / max_ul))) +
                                                (base_ul_rate * 0.03)
@@ -702,15 +726,22 @@ local function ratecontrol()
                                 next_ul_rate = base_ul_rate + (ul_linear_step * base_ul_rate * 0.03)
                                 ul_linear_step = ul_linear_step + 1
                             end
-
-                            nrate_up = nrate_up + 1
-                            safe_ul_rates_obs = max(safe_ul_rates_obs, nrate_up)
-                            nrate_up = nrate_up % histsize
-
-                            safe_ul_rates_iqr = compute_iqr(safe_ul_rates)
                         end
                         if down_del_stat and down_del_stat < dl_max_delta_owd and rx_load > high_load_level then
                             safe_dl_rates[nrate_down] = floor(cur_dl_rate * rx_load)
+
+                            if safe_dl_rates[nrate_down] >= base_dl_rate then
+                                safe_peak_dl_rates[nrate_peak_down] = safe_dl_rates[nrate_down]
+                                safe_peak_dl_rates_iqr = compute_iqr(safe_peak_dl_rates)
+                                safe_peak_dl_rates_obs = max(safe_peak_dl_rates_obs, nrate_peak_down)
+
+                                nrate_peak_down = nrate_peak_down % histsize
+                                nrate_peak_down = nrate_peak_down + 1
+                            end
+
+                            nrate_down = nrate_down + 1
+                            nrate_down = nrate_down % histsize
+
                             local max_dl = maximum(safe_dl_rates)
                             next_dl_rate = cur_dl_rate * (1 + .1 * max(0, (1 - cur_dl_rate / max_dl))) +
                                                (base_dl_rate * 0.03)
@@ -719,12 +750,6 @@ local function ratecontrol()
                                 next_dl_rate = base_dl_rate + (dl_linear_step * base_dl_rate * 0.03)
                                 dl_linear_step = dl_linear_step + 1
                             end
-
-                            nrate_down = nrate_down + 1
-                            safe_dl_rates_obs = max(safe_dl_rates_obs, nrate_down)
-                            nrate_down = nrate_down % histsize
-
-                            safe_dl_rates_iqr = compute_iqr(safe_dl_rates)
                         end
 
                         if up_del_stat > ul_max_delta_owd then
@@ -771,11 +796,11 @@ local function ratecontrol()
                 local next_dl_rate_unbounded = next_dl_rate
 
                 -- If the rates exceed the base rates, use the IQR to cap the rates at a reasonable maximum.
-                if next_ul_rate > base_ul_rate and safe_ul_rates_obs >= histsize then
-                    next_ul_rate = min(next_ul_rate, safe_ul_rates_iqr.upper_bound)
+                if next_ul_rate > base_ul_rate and safe_peak_ul_rates_obs >= histsize then
+                    next_ul_rate = min(next_ul_rate, safe_peak_ul_rates_iqr.upper_bound)
                 end
-                if next_dl_rate > base_dl_rate and safe_dl_rates_obs >= histsize then
-                    next_dl_rate = min(next_dl_rate, safe_dl_rates_iqr.upper_bound)
+                if next_dl_rate > base_dl_rate and safe_peak_dl_rates_obs >= histsize then
+                    next_dl_rate = min(next_dl_rate, safe_peak_dl_rates_iqr.upper_bound)
                 end
 
                 if next_ul_rate ~= cur_ul_rate or next_dl_rate ~= cur_dl_rate then
@@ -785,12 +810,12 @@ local function ratecontrol()
                         " next_ul_rate_unbounded " .. next_ul_rate_unbounded ..
                         " next_dl_rate_unbounded " .. next_dl_rate_unbounded)
 
-                    local iqr_info = "safe_ul_rates_obs " .. safe_dl_rates_obs .. " safe_ul_rates_iqr {"
-                    for k, v in pairs(safe_ul_rates_iqr) do
+                    local iqr_info = "safe_peak_ul_rates_obs " .. safe_peak_dl_rates_obs .. " safe_peak_ul_rates_iqr {"
+                    for k, v in pairs(safe_peak_ul_rates_iqr) do
                         iqr_info = iqr_info .. k .. "=" .. v .. ","
                     end
-                    iqr_info = iqr_info .. "} safe_dl_rates_obs " .. safe_dl_rates_obs .. " safe_dl_rates_iqr {"
-                    for k, v in pairs(safe_dl_rates_iqr) do
+                    iqr_info = iqr_info .. "} safe_peak_dl_rates_obs " .. safe_peak_dl_rates_obs .. " safe_peak_dl_rates_iqr {"
+                    for k, v in pairs(safe_peak_dl_rates_iqr) do
                       iqr_info = iqr_info .. k .. "=" .. v .. ","
                     end
                     iqr_info = iqr_info .. "}"
