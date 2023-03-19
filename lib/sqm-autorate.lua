@@ -54,6 +54,9 @@ requires.socket = socket
 local time = lanes.require "posix.time"
 requires.time = time
 
+local io = lanes.require "io"
+requires.io = io
+
 local vstruct = lanes.require "vstruct"
 requires.vstruct = vstruct
 --
@@ -505,6 +508,37 @@ local function read_stats_file(file)
     return bytes
 end
 
+local function compute_iqr(unsorted_vals)
+    local nvals = #unsorted_vals
+
+    -- Create new table and sort it. The index of the first number has to be "1", because table.sort relies on base-1 arrays.
+    local vals = {}
+    for i = 0, nvals - 1, 1 do
+      vals[i + 1] = unsorted_vals[i]
+    end
+    table.sort(vals)
+
+    local nquantile = nvals / 4
+    local q1 = math.floor(nquantile)
+    local q3 = math.floor(nquantile * 3)
+
+    local q1_val = vals[q1]
+    local q3_val = vals[q3]
+    local iqr = q3_val - q1_val
+    local iqr_fence = iqr * 1.5
+    local upper_bound = math.floor(q3_val + iqr_fence)
+
+    return {
+        min = vals[1],
+        max = vals[nvals],
+        q1 = q1_val,
+        q3 = q3_val,
+        upper_bound = upper_bound,
+        iqr = iqr,
+        iqr_fence = iqr_fence,
+    }
+end
+
 local function ratecontrol()
     set_debug_threadname('ratecontroller')
 
@@ -545,6 +579,15 @@ local function ratecontrol()
         safe_dl_rates[i] = (random() * 0.2 + 0.75) * (base_dl_rate)
         safe_ul_rates[i] = (random() * 0.2 + 0.75) * (base_ul_rate)
     end
+
+    -- IQR data, recomputed when the safe rates change. Used to find a reasonable maximum rate.
+    local safe_dl_rates_iqr = compute_iqr(safe_dl_rates)
+    local safe_ul_rates_iqr = compute_iqr(safe_ul_rates)
+
+    -- `safe_dl_rates` and `safe_ul_rates` get initialized with random values, and always have a length of `histsize`. These counters track the number of
+    -- "real" observations in both tables.
+    local safe_dl_rates_obs = 0
+    local safe_ul_rates_obs = 0
 
     local nrate_up = 0
     local nrate_down = 0
@@ -649,7 +692,10 @@ local function ratecontrol()
                             next_ul_rate = cur_ul_rate * (1 + .1 * max(0, (1 - cur_ul_rate / max_ul))) +
                                                (base_ul_rate * 0.03)
                             nrate_up = nrate_up + 1
+                            safe_ul_rates_obs = max(safe_ul_rates_obs, nrate_up)
                             nrate_up = nrate_up % histsize
+
+                            safe_ul_rates_iqr = compute_iqr(safe_ul_rates)
                         end
                         if down_del_stat and down_del_stat < dl_max_delta_owd and rx_load > high_load_level then
                             safe_dl_rates[nrate_down] = floor(cur_dl_rate * rx_load)
@@ -657,7 +703,10 @@ local function ratecontrol()
                             next_dl_rate = cur_dl_rate * (1 + .1 * max(0, (1 - cur_dl_rate / max_dl))) +
                                                (base_dl_rate * 0.03)
                             nrate_down = nrate_down + 1
+                            safe_dl_rates_obs = max(safe_dl_rates_obs, nrate_down)
                             nrate_down = nrate_down % histsize
+
+                            safe_dl_rates_iqr = compute_iqr(safe_dl_rates)
                         end
 
                         if up_del_stat > ul_max_delta_owd then
@@ -686,8 +735,35 @@ local function ratecontrol()
                 next_ul_rate = floor(max(min_ul_rate, next_ul_rate))
                 next_dl_rate = floor(max(min_dl_rate, next_dl_rate))
 
+                local next_ul_rate_unbounded = next_ul_rate
+                local next_dl_rate_unbounded = next_dl_rate
+
+                -- If the rates exceed the base rates, use the IQR to cap the rates at a reasonable maximum.
+                if next_ul_rate > base_ul_rate and safe_ul_rates_obs >= histsize then
+                    next_ul_rate = min(next_ul_rate, safe_ul_rates_iqr.upper_bound)
+                end
+                if next_dl_rate > base_dl_rate and safe_dl_rates_obs >= histsize then
+                    next_dl_rate = min(next_dl_rate, safe_dl_rates_iqr.upper_bound)
+                end
+
                 if next_ul_rate ~= cur_ul_rate or next_dl_rate ~= cur_dl_rate then
-                    logger(loglevel.INFO, "next_ul_rate " .. next_ul_rate .. " next_dl_rate " .. next_dl_rate)
+                    logger(loglevel.INFO,
+                        "next_ul_rate " .. next_ul_rate ..
+                        " next_dl_rate " .. next_dl_rate ..
+                        " next_ul_rate_unbounded " .. next_ul_rate_unbounded ..
+                        " next_dl_rate_unbounded " .. next_dl_rate_unbounded)
+
+                    local iqr_info = "safe_ul_rates_obs " .. safe_dl_rates_obs .. " safe_ul_rates_iqr {"
+                    for k, v in pairs(safe_ul_rates_iqr) do
+                        iqr_info = iqr_info .. k .. "=" .. v .. ","
+                    end
+                    iqr_info = iqr_info .. "} safe_dl_rates_obs " .. safe_dl_rates_obs .. " safe_dl_rates_iqr {"
+                    for k, v in pairs(safe_dl_rates_iqr) do
+                      iqr_info = iqr_info .. k .. "=" .. v .. ","
+                    end
+                    iqr_info = iqr_info .. "}"
+
+                    logger(loglevel.INFO, iqr_info)
                 end
 
                 -- TC modification
@@ -722,6 +798,7 @@ local function ratecontrol()
                 lastchg_s = lastchg_s - start_s
                 lastchg_t = lastchg_s + lastchg_ns / 1e9
 
+                io.stdout:flush()
             end
         end
 
@@ -1078,7 +1155,7 @@ local function conductor()
     nsleep(10, 0) -- sleep 10 seconds before we start adjusting speeds
 
     threads["regulator"] = lanes.gen("*", {
-        required = {"posix", "posix.time"}
+        required = {"posix", "posix.time", "io"}
     }, ratecontrol)()
 
     -- Start this whole thing in motion!
